@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 模型輸出與記錄
+model_output/
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Claude Code 本機設定
+.claude/settings.local.json
+.claude/*.lock

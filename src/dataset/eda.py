@@ -288,7 +288,7 @@ def plot_irrigation_cloud_distribution(
 
 
 if __name__ == "__main__":
-    from myplot import plot_patch
+    from src.visualization.myplot import plot_patch
     XY_DIR = r"D:\研究一所\嘉璯\S2全台資料_Xy對應"
 
     # ── 全圖（原始來源）每日統計 ──────────────────────────────────────────────

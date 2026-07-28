@@ -1,0 +1,14 @@
+# Sentinel-2 Model A 灌溉判釋 — 直接依賴(版本取自 .venv, Python 3.14)
+# torch/torchvision 為 CUDA 13.0 版,安裝時需指定 PyTorch index:
+#   pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu130
+torch==2.13.0
+torchvision==0.28.0
+segmentation_models_pytorch==0.5.0
+numpy==2.5.1
+pandas==3.0.5
+matplotlib==3.11.1
+scikit-learn==1.9.0
+tqdm==4.69.0
+netCDF4==1.7.4
+rasterio==1.5.0
+ipykernel==7.3.0

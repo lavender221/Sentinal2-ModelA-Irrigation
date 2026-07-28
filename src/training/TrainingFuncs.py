@@ -14,8 +14,8 @@ import torch
 from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 
-from data_cut import reconstruct_y_patches
-from myplot import plot_training_history
+from src.preprocessing.data_cut import reconstruct_y_patches
+from src.visualization.myplot import plot_training_history
 
 try:
     from tensorboardX import SummaryWriter as _SummaryWriter

@@ -28,7 +28,7 @@ X patch 格式（來自 data_cut.py）：(5, P, P)
     避免使用寫死邊界，同時確保 val/test 沿用 train 的統計量、不洩漏資訊。
 
 使用方式：
-    from data_cut import cut_xy_patches
+    from src.preprocessing.data_cut import cut_xy_patches
 
     train_dir = cut_xy_patches(xy_dir=r"...\\xy對應", mode="train", dates=[...], ...)
     train_dataset = OneSliceDataset(
@@ -236,8 +236,8 @@ class OneSliceDataset(Dataset):
 # ── 主程式（示範宣告 + EDA 查看切割結果）────────────────────────────────────
 
 if __name__ == "__main__":
-    from data_cut import cut_xy_patches
-    from eda import (
+    from src.preprocessing.data_cut import cut_xy_patches
+    from src.dataset.eda import (
         compute_irrigation_cloud_cover_rate,
         count_zero_nodata_patches,
         plot_irrigation_cloud_distribution,
