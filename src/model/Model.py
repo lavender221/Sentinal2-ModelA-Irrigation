@@ -9,23 +9,47 @@ import torch.nn as nn
 import segmentation_models_pytorch as smp
 
 
-def build_model(in_channels: int = 17, encoder_name: str = "resnet34") -> nn.Module:
+def build_model(in_channels: int = 5, encoder_name: str = "resnet34") -> nn.Module:
     """
     建立 U-Net 分割模型。
 
+    輸入通道 > 3 時，encoder 第一層卷積權重依規劃文件調整：
+    前 3 通道沿用 ImageNet 預訓練的 RGB 權重，第 4 通道起（波段通道、
+    SCL one-hot 通道、時間差通道等）以 RGB 三通道權重的平均值複製填入，
+    其餘層沿用預訓練權重。
+
     Args:
-        in_channels:  輸入通道數（預設 17 = 4 連續波段 + 13 SCL one-hot）
+        in_channels:  輸入通道數（由 Dataset.num_channels 決定，
+                      預設 5 = 4 連續波段 + 1 時間差通道）
         encoder_name: Encoder 名稱（預設 resnet34，載入 ImageNet 預訓練權重）
 
     Returns:
         smp.Unet 模型實例
     """
-    return smp.Unet(
+    model = smp.Unet(
         encoder_name=encoder_name,
         encoder_weights="imagenet",
         in_channels=in_channels,
         classes=1,
     )
+
+    if in_channels > 3:
+        # smp 對 in_channels > 3 的預設處理是「RGB 權重循環複製再整體縮放」，
+        # 改為規劃文件的做法：前 3 通道保留原 RGB 權重，其餘通道填 RGB 平均
+        first_conv = next(
+            m for m in model.encoder.modules() if isinstance(m, nn.Conv2d)
+        )
+        pretrained = smp.encoders.get_encoder(
+            encoder_name, in_channels=3, weights="imagenet"
+        )
+        w_rgb = next(
+            m for m in pretrained.modules() if isinstance(m, nn.Conv2d)
+        ).weight.detach()  # (out, 3, k, k)
+        with torch.no_grad():
+            first_conv.weight[:, :3] = w_rgb
+            first_conv.weight[:, 3:] = w_rgb.mean(dim=1, keepdim=True)
+
+    return model
 
 
 class MaskedDiceBCELoss(nn.Module):

@@ -4,8 +4,8 @@ TrainingFuncs.py
 訓練、驗證與評估函式。
 """
 
+import json
 import os
-import shutil
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -107,20 +107,28 @@ def training(model, train_loader, val_loader, criterion,
     """
     主訓練迴圈，含 early stopping 與 checkpoint。
 
+    每個 epoch 結束時將訓練結果覆寫至 output_dir/train_history.json
+    （per-epoch 的 loss/acc/f1 與 best_val_loss / best_val_acc / best_val_f1 /
+    best_epoch），中斷執行也會保留已完成 epochs 的紀錄；
+    TensorBoard 寫入統一由 notebook 最後的匯整步驟依此檔案重建。
+
     Args:
         model, train_loader, val_loader, criterion, optimizer: 模型與訓練元件
         config: CONFIG dict，需含 output_dir / epochs / patience / nodata_value
         device: 運算裝置字串
-        writer: SummaryWriter 實例（可選）；提供時每 epoch 寫入 TensorBoard 曲線
+        writer: SummaryWriter 實例（可選）；提供時每 epoch 即時寫入 TensorBoard
+                曲線（預設 None，由最後的匯整步驟統一寫入）
 
     Returns:
-        history dict，含各 epoch 指標與最佳模型路徑
+        history dict，含各 epoch 指標、best_* 指標與最佳模型路徑
     """
     output_dir    = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
     best_path     = os.path.join(output_dir, "best_model.pt")
+    history_path  = os.path.join(output_dir, "train_history.json")
     ignore_index  = config.get("nodata_value", 999)
     best_val_loss = float("inf")
+    best_epoch    = 0
     no_improve    = 0
     history = {k: [] for k in ["train_loss", "val_loss", "train_acc", "val_acc", "train_f1", "val_f1"]}
 
@@ -141,21 +149,34 @@ def training(model, train_loader, val_loader, criterion,
         print(f"[Epoch {epoch:03d}/{config['epochs']}] "
               f"loss {tl:.4f}/{vl:.4f}  f1 {tm['f1']:.4f}/{vm['f1']:.4f}")
 
-        if vl < best_val_loss:
+        improved = vl < best_val_loss
+        if improved:
             best_val_loss = vl
+            best_epoch    = epoch
             no_improve    = 0
             torch.save({"epoch": epoch, "model_state_dict": model.state_dict(),
                         "val_loss": vl, "config": config}, best_path)
             print(f"  ✓ 已儲存最佳模型（val_loss={vl:.4f}）")
-        else:
+
+        # 每個 epoch 覆寫 train_history.json（中斷也保留已完成的紀錄）
+        history.update({
+            "best_val_loss": best_val_loss,
+            "best_epoch":    best_epoch,
+            "best_val_acc":  max(history["val_acc"]),
+            "best_val_f1":   max(history["val_f1"]),
+            "best_model_path": best_path,
+        })
+        with open(history_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+
+        if not improved:
             no_improve += 1
             print(f"  ⚠ 未改善 ({no_improve}/{config['patience']})")
             if no_improve >= config["patience"]:
                 print("  Early stopping")
                 break
 
-    history["best_val_loss"]   = best_val_loss
-    history["best_model_path"] = best_path
+    print(f"✓ 訓練結果已儲存：{history_path}")
     plot_training_history(history, output_dir=output_dir)
     return history
 
@@ -177,9 +198,10 @@ def evaluating_all(
 
     若同時傳入 dataset 與 save_dir，則額外：
       1. 將每個 patch 的 0/1 預測（nodata 位置還原為 ignore_index）
-         存至 save_dir/test_pred/{date}/patch_*.npy
-      2. 複製 patch_info.json 後呼叫 reconstruct_y_patches，
-         在各日期資料夾下生成 result.npy（完整圖重建）
+         存至 save_dir/test_pred/{date}/{region}/patch_*.npy
+      2. 由 dataset 的 {mode}_info.json 取出各 (date, region) 的 item
+         寫成重建用 patch_info.json，再呼叫 reconstruct_y_patches，
+         在各區域資料夾下生成 result.npy（完整圖重建）
 
     注意：loader 必須 shuffle=False，num_workers 建議 0，
           以確保 batch 順序與 dataset.samples 一致。
@@ -225,22 +247,27 @@ def evaluating_all(
     m = _metrics(cm)
     m["confusion_matrix"] = cm.tolist()
 
-    # 各 (日期, 區域)：複製 patch_info.json → 逐區域重建完整圖
+    # 各 (日期, 區域)：由 {mode}_info.json 的 item 寫出重建用 patch_info.json
+    # → 逐區域重建完整圖
     if save_preds:
         pairs_done = sorted({(s["date"], s["region"]) for s in dataset.samples})
+        item_map = {(it["date"], it["region"]): it for it in dataset.items}
         print("\n── 重建完整預測圖（逐區域）──")
         for date, region in pairs_done:
-            src_info = dataset.data_dir / "y" / date / region / "patch_info.json"
+            item = item_map.get((date, region))
+            if item is None:
+                print(f"  [警告] json 中找不到 {date}/{region} 的切割資訊，跳過合併")
+                continue
+            region_info = dict(item)
+            region_info["patch_size"] = dataset.patch_size
             dst_info = pred_root / date / region / "patch_info.json"
-            if src_info.exists():
-                dst_info.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_info, dst_info)
-                reconstruct_y_patches(
-                    date_dir=str(pred_root / date / region),
-                    nodata_value=float(ignore_index),
-                    output_name="result.npy",
-                )
-            else:
-                print(f"  [警告] 找不到 {src_info.name}，跳過 {date}/{region} 合併")
+            dst_info.parent.mkdir(parents=True, exist_ok=True)
+            with open(dst_info, "w", encoding="utf-8") as f:
+                json.dump(region_info, f, ensure_ascii=False, indent=2)
+            reconstruct_y_patches(
+                date_dir=str(pred_root / date / region),
+                nodata_value=float(ignore_index),
+                output_name="result.npy",
+            )
 
     return m
