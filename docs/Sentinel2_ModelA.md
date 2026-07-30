@@ -210,11 +210,13 @@ train json 共 419,520 patch → `filter_all_nodata` 剔除 167,180 → 剩 252,
 
 # 二、衍生模型
 
-> 每個衍生模型**只描述與 Base Model 的差異**,其餘設定皆與 Base Model 相同。狀態：⬜ 規劃中 / 🔄 訓練中 / ✅ 已完成。
+> 每個衍生模型**只描述與 Base Model 的差異**,其餘設定皆與 Base Model 相同。狀態：⬜ 未執行 / 🔄 訓練中 / ✅ 已完成。
+>
+> **M1~M5 的程式開關皆已實作**（CONFIG 切換,預設關閉 = Base Model 行為）。執行實驗時只需：改 `MODEL_NAME`（如 `"M1_augmentation"`）→ 撥對應開關 → 重跑 notebook → 將 `test_metrics.json` 結果填入比較表並 commit。
 
 ### M1：資料擴增 ⬜
 
-- train 加入隨機水平/垂直翻轉 + 90° 旋轉（衛星影像標準擴增,針對 train/val 泛化差距）
+- `augment: True`——train 加入隨機水平/垂直翻轉 + 90° 旋轉（X/y/scl_mask 同步變換;衛星影像標準擴增,針對 train/val 泛化差距）
 
 ### M2：雲遮蔽處理 ⬜
 
@@ -228,14 +230,14 @@ train json 共 419,520 patch → `filter_all_nodata` 剔除 167,180 → 剩 252,
 
 ### M4：訓練設定調整 ⬜
 
-- batch size 4 → 32~64（RTX 5090 32GB）,lr 等比例上調
-- weight_decay 1e-5 → 1e-2
-- 加入 lr scheduler（ReduceLROnPlateau 監測 val_loss）
+- `batch_size` 4 → 32~64（RTX 5090 32GB）,`lr` 等比例上調
+- `weight_decay` 1e-5 → 1e-2
+- `use_scheduler: True`——ReduceLROnPlateau 監測 val_loss（`scheduler_factor = 0.5`、`scheduler_patience = 3` 可調）
 
 ### M5：類別不平衡強化 ⬜
 
 - `pos_weight` 1.0 → 3~5（提升 recall）
-- 高灌水比例 patch oversampling（依 json 的 `water_ratio` 欄位 + `WeightedRandomSampler`）
+- `oversample_water: True`——高灌水比例 patch oversampling（`WeightedRandomSampler`,權重 = 1 + `oversample_factor`(=10) × `water_ratio`）
 
 ## 🏆 測試結果比較表
 

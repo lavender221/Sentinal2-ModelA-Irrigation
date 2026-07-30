@@ -112,7 +112,9 @@ def training(model, train_loader, val_loader, criterion,
 
     Args:
         model, train_loader, val_loader, criterion, optimizer: 模型與訓練元件
-        config: CONFIG dict，需含 output_dir / epochs / patience / nodata_value
+        config: CONFIG dict，需含 output_dir / epochs / patience / nodata_value；
+                可選 use_scheduler（True 時使用 ReduceLROnPlateau 監測 val_loss，
+                factor/patience 由 scheduler_factor / scheduler_patience 控制）
         device: 運算裝置字串
         writer: SummaryWriter 實例（可選）；提供時每 epoch 即時寫入 TensorBoard
                 曲線（預設 None，由最後的匯整步驟統一寫入）
@@ -128,15 +130,32 @@ def training(model, train_loader, val_loader, criterion,
     best_val_loss = float("inf")
     best_epoch    = 0
     no_improve    = 0
-    history = {k: [] for k in ["train_loss", "val_loss", "train_acc", "val_acc", "train_f1", "val_f1"]}
+    history = {k: [] for k in ["train_loss", "val_loss", "train_acc", "val_acc", "train_f1", "val_f1", "lr"]}
+
+    # lr scheduler（可選，預設不啟用）：val_loss 停滯時降低學習率
+    scheduler = None
+    if config.get("use_scheduler", False):
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min",
+            factor=config.get("scheduler_factor", 0.5),
+            patience=config.get("scheduler_patience", 3),
+        )
 
     for epoch in range(1, config["epochs"] + 1):
         tl, tm = train_one_epoch(model, train_loader, optimizer, criterion, device, ignore_index)
         vl, vm = validate_one_epoch(model, val_loader, criterion, device, ignore_index)
 
+        cur_lr = optimizer.param_groups[0]["lr"]
+        if scheduler is not None:
+            scheduler.step(vl)
+            new_lr = optimizer.param_groups[0]["lr"]
+            if new_lr < cur_lr:
+                print(f"  ↓ lr 調降：{cur_lr:.2e} → {new_lr:.2e}")
+
         for key, val in [("train_loss", tl), ("val_loss", vl),
                          ("train_acc", tm["accuracy"]), ("val_acc", vm["accuracy"]),
-                         ("train_f1",  tm["f1"]),       ("val_f1",  vm["f1"])]:
+                         ("train_f1",  tm["f1"]),       ("val_f1",  vm["f1"]),
+                         ("lr", cur_lr)]:
             history[key].append(val)
 
         if writer is not None:

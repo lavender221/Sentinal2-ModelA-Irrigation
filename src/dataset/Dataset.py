@@ -106,6 +106,7 @@ class OneSliceDataset(Dataset):
         no_water_keep_ratio: Optional[float] = None,
         seed: int = 42,
         nday: int = 20,
+        augment: bool = False,
     ):
         """
         Args:
@@ -143,6 +144,8 @@ class OneSliceDataset(Dataset):
             seed:                  無灌水 patch 抽樣的隨機種子（固定可重現）
             nday:                  時間差通道的正規化分母（X 資料視窗上限，
                                    nday20 → 20），天數差 / nday 後約落在 0~1
+            augment:               True=隨機資料擴增（水平/垂直翻轉 + 90° 旋轉，
+                                   X/y/scl_mask 同步變換；僅 train 建議開啟）
         """
         self.info_path = Path(info_json)
         self.scl_num_classes = scl_num_classes
@@ -157,6 +160,7 @@ class OneSliceDataset(Dataset):
         self.no_water_keep_ratio = no_water_keep_ratio
         self.seed = seed
         self.nday = nday
+        self.augment = augment
         self._mmap_cache: Dict[str, np.ndarray] = {}
 
         self.clip_min = np.asarray(clip_min, dtype=np.float32) if clip_min is not None else np.zeros(4, dtype=np.float32)
@@ -258,6 +262,7 @@ class OneSliceDataset(Dataset):
                     "col": meta["col"],
                     "patch_size": self.patch_size,
                     "day_diff": day_diff,
+                    "water_ratio": meta.get("water_ratio"),  # 供 oversampling 加權用
                     "src_y_path": src_y_path,
                     "src_x_path": src_x_path,
                 }))
@@ -400,6 +405,24 @@ class OneSliceDataset(Dataset):
 
         X_final = torch.cat(channels, dim=0)                    # (num_channels, P, P)
         y_tensor = torch.tensor(y_data, dtype=torch.float32)
+
+        # 隨機資料擴增（augment=True 時）：水平/垂直翻轉 + 90° 旋轉，
+        # X / y / scl_cloud_mask 套用同一組變換（patch 為正方形，rot90 安全）
+        if self.augment:
+            if torch.rand(1).item() < 0.5:  # 水平翻轉
+                X_final = torch.flip(X_final, dims=[-1])
+                y_tensor = torch.flip(y_tensor, dims=[-1])
+                scl_cloud_mask = torch.flip(scl_cloud_mask, dims=[-1])
+            if torch.rand(1).item() < 0.5:  # 垂直翻轉
+                X_final = torch.flip(X_final, dims=[-2])
+                y_tensor = torch.flip(y_tensor, dims=[-2])
+                scl_cloud_mask = torch.flip(scl_cloud_mask, dims=[-2])
+            k = int(torch.randint(0, 4, (1,)).item())  # 0/90/180/270 度旋轉
+            if k:
+                X_final = torch.rot90(X_final, k, dims=[-2, -1])
+                y_tensor = torch.rot90(y_tensor, k, dims=[-2, -1])
+                scl_cloud_mask = torch.rot90(scl_cloud_mask, k, dims=[-2, -1])
+
         return X_final, y_tensor, scl_cloud_mask
 
 
