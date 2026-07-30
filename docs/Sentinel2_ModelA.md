@@ -93,7 +93,7 @@ y -- 20230130 -- N1.npy、N2.npy、...、W5.npy
 
 ## 🔀 訓練、驗證、測試切分
 
-### 時間獨立（Time-independent split，Case1）
+### 時間獨立（Time-independent split，Case1）——Base Model 採用
 
 - 資料範圍：**2023年與2026年的全部日期**
 - 切分方式：用固定 seed 隨機打亂全部日期後，依 訓練 : 驗證 : 測試 = **6 : 2 : 2** 切分
@@ -119,10 +119,11 @@ y -- 20230130 -- N1.npy、N2.npy、...、W5.npy
 | 驗證 / 測試 | 256 × 256 | 256（= patch_size） |
 
 > 📌 各 split 的儲存方式（X 來源日期使用「X-y 配對邏輯」配對到的 X 日期影像）：
-> - **train / valid / test 一律相同**：整個 split 只寫一份 json,集中放在模型輸出資料夾（`model_output/case1_time_split/` 等,Case1/Case2 各自的 output_dir,互不覆蓋）,檔名為 `train_info.json` / `valid_info.json` / `test_info.json`,每個（日期, 區塊）為 json 中的一筆 item,記錄重建/即時切割用的切割座標與 padding 資訊,**不儲存 patch `.npy`**;Dataset 讀取時依座標從原始大圖即時切割（memmap,只讀取視窗範圍）
-> - **train 額外欄位**：每個 patch 條目另記錄**灌水比例**（`water_ratio`）、**SCL（=3, 8, 9）比例**（`scl_cloud_ratio`,以上分母為 y≠999 的有效像素）與 **999 比例**（`nodata_ratio`,分母為整張 patch 的像素數）,皆為 0~1 小數
+> - **切割結果與模型解耦**：切割結果不跟隨模型名稱,依「**切割方式（time/spatial）+ patch_size + stride + keep_remainder**」命名,集中存於 `split_ways/` 下（例如 `split_ways/time_p256_s128_keepFalse/`）;**各模型透過 CONFIG 的這組參數選擇一個切割結果資料夾**,相同切割設定的模型共用同一份、不重切
+> - **train / valid / test 一律相同**：整個 split 只寫一份 json（`train_info.json` / `valid_info.json` / `test_info.json`）,每個（日期, 區塊）為 json 中的一筆 item,記錄重建/即時切割用的切割座標與 padding 資訊,**不儲存 patch `.npy`**;Dataset 讀取時依座標從原始大圖即時切割（memmap,只讀取視窗範圍）
+> - **train 額外欄位**：每個 patch 條目另記錄**灌水比例**（`water_ratio`,**分子只計 y=1**,弱相關的 0.5 不算灌水）、**SCL（=3, 8, 9）比例**（`scl_cloud_ratio`,以上分母為 y≠999 的有效像素）與 **999 比例**（`nodata_ratio`,分母為整張 patch 的像素數）,皆為 0~1 小數
 > - **切割階段不做任何 patch 篩選**：篩選（`filter_all_nodata` / `filter_no_water` / `cloud_rate_threshold`）與下採樣改由宣告 Dataset 時依 `train_info.json` 的比例欄位進行
-> - **正規化統計量**：以 train 統計出的 `clip_min`/`clip_max`（1st~99th 百分位）與 `mean`/`std` 也存於 output_dir 的 `norm_stats.json`,重跑（`generate_patch=False`）時直接讀取、不重算
+> - **正規化統計量**：以 train 統計出的 `clip_min`/`clip_max`（1st~99th 百分位）與 `mean`/`std` 存於同一個切割結果資料夾的 `norm_stats.json`,重跑（`generate_patch=False`）時直接讀取、不重算
 
 ## ⚙️ 前處理流程
 
@@ -157,20 +158,26 @@ y -- 20230130 -- N1.npy、N2.npy、...、W5.npy
 
 1. `filter_all_nodata = True`：剔除整張皆為 nodata 的 patch（`nodata_ratio == 1`）
 2. `filter_no_water = False`、`cloud_rate_threshold = None`（皆不啟用）
-3. **無灌水 patch 下採樣**：含灌水像素（`water_ratio > 0`）的 patch（n 張）**全數保留**,無灌水（`water_ratio == 0`）的 patch 只**隨機保留 n × 0.25 張**（`no_water_keep_ratio = 0.25`,固定 seed 可重現）
+3. **無灌水 patch 下採樣**（於上述篩選**之後**套用）：含灌水像素（`water_ratio > 0`）的 patch（n 張）**全數保留**,無灌水（`water_ratio == 0`,只含 0/0.5/999）的 patch 只**隨機保留 n × 0.25 張**（`no_water_keep_ratio = 0.25`,固定 seed 可重現）
+
+**Base Model 實際訓練資料量**（Case1,`time_p256_s128_keepFalse`）：
+train json 共 419,520 patch → `filter_all_nodata` 剔除 167,180 → 剩 252,340（有灌水 48,902、無灌水 203,438）→ 下採樣後**實際用於訓練 61,128 patch**。
 
 ## 🧠 模型與訓練設定
 
 | 項目 | 設定內容 |
 |---|---|
+| 切分方式 | **Case1 時間獨立**（6:2:2） |
+| 切割結果 | `split_ways/time_p256_s128_keepFalse/` |
 | 模型架構 | **UNet**，encoder = `resnet34`（ImageNet 預訓練） |
 | 輸入通道 | 5（4 波段 + 時間差） |
 | 損失函數 | **BCE × 0.5 + Dice × 0.5**（`pos_weight = 1.0` 等權；`scl_mask = False` 不遮雲） |
 | 優化器 | **AdamW**（lr = 1e-4、weight_decay = 1e-5） |
 | batch size | 4 |
+| DataLoader | `num_workers = 4`、`persistent_workers = True`、`pin_memory`（有 GPU 時） |
 | epochs / early stopping | 100 / patience 10（監測 val_loss） |
 | 預測閾值 | sigmoid ≥ 0.5 → 1 |
-| seed | 42 |
+| seed | 42（日期切分、下採樣抽樣、torch 皆用同一 seed） |
 
 ### 🔧 輸入通道調整（Encoder 修改）
 
@@ -189,12 +196,15 @@ y -- 20230130 -- N1.npy、N2.npy、...、W5.npy
 
 ## 📊 評估與輸出
 
+- **模型輸出組織**：CONFIG 的 `MODEL_NAME`（如 `base_model`、之後的 `M1_augmentation`…）決定輸出資料夾 `model_output/{MODEL_NAME}/` 與 TensorBoard run 名稱;每個模型各自取名、互不覆蓋（切割結果在 `split_ways/`,與模型名稱無關）
 - 指標：pixel-level confusion matrix（排除 999 與 0.5）計算 **accuracy / precision / recall / F1 / IoU**
+- **EDA**（訓練前檢視,統計對象為篩選＋下採樣後**實際用於訓練**的 patch）：整體單列統計（total / all_nodata / all_zero / have_one / 平均灌水率 / 平均遮蔽率,直接讀 json 比例欄位）＋ 整體灌水率、遮蔽率分布直方圖各一張
 - 結果檔案（都在 output_dir,中斷或重啟 kernel 皆保留）：
   - `train_history.json`：每 epoch 的 train/valid loss/acc/f1 + `best_val_loss` / `best_val_acc` / `best_val_f1` / `best_epoch`（逐 epoch 覆寫）
   - `test_metrics.json`：測試集 acc / precision / recall / f1 / IoU + confusion matrix
-  - `eda.txt`、`confusion_map_*.png`、`test_pred/`、`test_gt/`
-- TensorBoard：由 notebook 最後的「TensorBoard 匯整」cell 讀取上述檔案,一次重建單一 run（訓練曲線 + HPARAMS + EDA TEXT + confusion map IMAGES）
+  - `eda.txt`（整體統計文字）、`eda_irrigation_cloud_distribution.png`（分布圖）、`confusion_map_*.png`
+- **預測結果視覺化**：對「指定的 (date, region)」即時推論——載入 best_model 對該區域的 test patches 當場預測,依 json 座標重建完整圖（nodata 蓋回 999）,與 xy_dir 原始 y 大圖比對畫出 TP/TN/FP/FN confusion map;**不預先輸出 test_pred / test_gt 中間檔**
+- TensorBoard：由「TensorBoard 匯整」cell 讀取上述檔案,一次重建單一 run（訓練曲線 + HPARAMS + EDA TEXT + confusion map IMAGES;視覺化 cell 在匯整之後,新畫的圖重跑匯整即可納入）
 
 ---
 
@@ -233,9 +243,10 @@ y -- 20230130 -- N1.npy、N2.npy、...、W5.npy
 
 | 模型 | accuracy | f1_score | precision | recall | IoU | 備註 |
 |---|:---:|:---:|:---:|:---:|:---:|---|
-| **base_model** | 0.9760 | 0.3465 | 0.4138 | 0.2981 | 0.2096 | best_val_loss 0.4966（epoch 4）；run：`case1_time_split_V2` |
+| **base_model** | 0.9760 | 0.3465 | 0.4138 | 0.2981 | 0.2096 | Case1 時間切分；best_val_loss 0.4966（epoch 4）；run：`base_model` |
 | M1 資料擴增 | — | — | — | — | — | |
-| M2 雲遮蔽處理 | — | — | — | — | — | |
+| M2 雲遮蔽處理（scl_mask） | — | — | — | — | — | |
+| M2b 雲遮蔽處理（高雲 patch 剔除） | — | — | — | — | — | |
 | M3 特徵擴充 | — | — | — | — | — | |
 | M4 訓練設定調整 | — | — | — | — | — | |
 | M5 類別不平衡強化 | — | — | — | — | — | |
@@ -244,7 +255,7 @@ y -- 20230130 -- N1.npy、N2.npy、...、W5.npy
 
 # 三、待辦事項
 
-- [x] **base_model 訓練 + 測試**,結果已填入比較表（run：`case1_time_split_V2`;觀察：train loss 持續下降、val loss 停滯 ~0.50,train/val 泛化差距大 → M1~M5 的主要動機）
+- [x] **base_model 訓練 + 測試**,結果已填入比較表（run：`base_model`;觀察：train loss 持續下降、val loss 停滯 ~0.50,train/val 泛化差距大 → M1~M5 的主要動機）
 - [ ] **逐日期 val F1 × 雲量診斷**：把 val 各日期的 F1 分開統計,對照該日期雲量,確認是否為特定高雲日期拖垮平均
 - [ ] **train / val / test 雲量分布檢查**：確認各切分之間的 SCL 品質分布相近,避免驗證結果過於樂觀
 - [ ] 依診斷結果依序執行 M1~M5 衍生模型實驗,更新比較表

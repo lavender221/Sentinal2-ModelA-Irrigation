@@ -124,6 +124,8 @@ def plot_confusion_map(
     """
     比對預測結果與 ground truth，畫出每個 pixel 的 TP/TN/FP/FN 狀態圖。
 
+    pred_path / gt_path 可傳入 .npy 檔路徑或 np.ndarray（即時推論結果直接傳陣列）。
+
     顏色規則：
         TP  (pred=1, gt=1)  → 綠色  #2ca02c
         TN  (pred=0, gt=0)  → 灰色  #aec7e8
@@ -134,8 +136,8 @@ def plot_confusion_map(
     Returns:
         dict 含 tp / tn / fp / fn / total_valid pixel 數
     """
-    pred = np.load(pred_path)
-    gt   = np.load(gt_path)
+    pred = pred_path if isinstance(pred_path, np.ndarray) else np.load(pred_path)
+    gt   = gt_path   if isinstance(gt_path,   np.ndarray) else np.load(gt_path)
 
     assert pred.shape == gt.shape, (
         f"shape mismatch: pred={pred.shape}, gt={gt.shape}"

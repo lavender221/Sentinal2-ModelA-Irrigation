@@ -6,15 +6,13 @@ TrainingFuncs.py
 
 import json
 import os
-from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
 from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 
-from src.preprocessing.data_cut import reconstruct_y_patches
 from src.visualization.myplot import plot_training_history
 
 try:
@@ -190,21 +188,10 @@ def evaluating_all(
     device,
     threshold: float = 0.5,
     ignore_index: int = 999,
-    dataset=None,
-    save_dir: Optional[str] = None,
 ) -> Dict:
     """
-    評估方式一：統計所有 pixel 的預測結果（合併計算）。
-
-    若同時傳入 dataset 與 save_dir，則額外：
-      1. 將每個 patch 的 0/1 預測（nodata 位置還原為 ignore_index）
-         存至 save_dir/test_pred/{date}/{region}/patch_*.npy
-      2. 由 dataset 的 {mode}_info.json 取出各 (date, region) 的 item
-         寫成重建用 patch_info.json，再呼叫 reconstruct_y_patches，
-         在各區域資料夾下生成 result.npy（完整圖重建）
-
-    注意：loader 必須 shuffle=False，num_workers 建議 0，
-          以確保 batch 順序與 dataset.samples 一致。
+    評估方式一：統計所有 pixel 的預測結果（合併計算），不輸出任何預測檔案。
+    （完整預測圖的視覺化由 notebook 對指定 (date, region) 即時推論產生。）
 
     Returns:
         dict，含 accuracy / precision / recall / f1 / iou / confusion_matrix
@@ -212,33 +199,10 @@ def evaluating_all(
     model.eval()
     cm = np.zeros((2, 2), dtype=np.int64)
 
-    save_preds = (dataset is not None) and (save_dir is not None)
-    pred_root  = Path(save_dir) / "test_pred" if save_preds else None
-    sample_idx = 0
-
     for x, y, _ in tqdm(loader, desc="Eval (all)", leave=False):
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
         logits = model(x)
         cm = _update_cm(cm, logits, y, threshold, ignore_index)
-
-        if save_preds:
-            probs = torch.sigmoid(logits.detach())
-            if probs.dim() == y.dim() + 1:
-                probs = probs.squeeze(1)
-            preds = (probs >= threshold).long()          # (B, H, W)  值 0 / 1
-
-            for i in range(x.size(0)):
-                s       = dataset.samples[sample_idx]
-                pred_np = preds[i].cpu().numpy().astype(np.int16)   # (H, W)
-                y_np    = y[i].cpu().numpy()                         # (H, W)
-
-                # nodata 位置（y==999）還原為 ignore_index
-                pred_np[y_np == ignore_index] = ignore_index
-
-                out_dir = pred_root / s["date"] / s["region"]
-                out_dir.mkdir(parents=True, exist_ok=True)
-                np.save(out_dir / s["patch_name"], pred_np)
-                sample_idx += 1
 
     if cm.sum() == 0:
         print("[警告] 沒有有效像素可評估。")
@@ -246,28 +210,4 @@ def evaluating_all(
 
     m = _metrics(cm)
     m["confusion_matrix"] = cm.tolist()
-
-    # 各 (日期, 區域)：由 {mode}_info.json 的 item 寫出重建用 patch_info.json
-    # → 逐區域重建完整圖
-    if save_preds:
-        pairs_done = sorted({(s["date"], s["region"]) for s in dataset.samples})
-        item_map = {(it["date"], it["region"]): it for it in dataset.items}
-        print("\n── 重建完整預測圖（逐區域）──")
-        for date, region in pairs_done:
-            item = item_map.get((date, region))
-            if item is None:
-                print(f"  [警告] json 中找不到 {date}/{region} 的切割資訊，跳過合併")
-                continue
-            region_info = dict(item)
-            region_info["patch_size"] = dataset.patch_size
-            dst_info = pred_root / date / region / "patch_info.json"
-            dst_info.parent.mkdir(parents=True, exist_ok=True)
-            with open(dst_info, "w", encoding="utf-8") as f:
-                json.dump(region_info, f, ensure_ascii=False, indent=2)
-            reconstruct_y_patches(
-                date_dir=str(pred_root / date / region),
-                nodata_value=float(ignore_index),
-                output_name="result.npy",
-            )
-
     return m
